@@ -1,3 +1,7 @@
+You may need to install the Google Repository from the Android SDK manager.
+
+![Google Play Services error](doc/media/PlayServicesError.png)
+
 Let's show FIRST the power of the community
 ---
 ## Welcome!

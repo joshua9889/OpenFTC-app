@@ -32,4 +32,5 @@ dependencies {
     compile project(':RobotCore')
     compile project(':Hardware')
     compile project(':Inspection')
+    compile 'com.android.support.constraint:constraint-layout:1.0.2'
 }
