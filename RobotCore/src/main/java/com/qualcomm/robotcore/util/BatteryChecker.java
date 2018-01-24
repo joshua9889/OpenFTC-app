@@ -40,144 +40,162 @@ import android.os.Handler;
 @SuppressWarnings("WeakerAccess")
 public class BatteryChecker {
 
-  //------------------------------------------------------------------------------------------------
-  // Callback interface
-  //------------------------------------------------------------------------------------------------
+    //------------------------------------------------------------------------------------------------
+    // Callback interface
+    //------------------------------------------------------------------------------------------------
 
-  public interface BatteryWatcher {
-    // called whenever the battery watcher should receive the latest
-    // battery level, reported as a percent.
-    void updateBatteryStatus(BatteryStatus status);
-  }
-
-  public static class BatteryStatus {
-    public double  percent;
-    public boolean isCharging;
-
-    public BatteryStatus(double percent, boolean isCharging) {
-      this.percent = percent;
-      this.isCharging = isCharging;
+    public interface BatteryWatcher {
+        // called whenever the battery watcher should receive the latest
+        // battery level, reported as a percent.
+        void updateBatteryStatus(BatteryStatus status);
     }
 
-    protected BatteryStatus() { }
+    public static class BatteryStatus {
+        public double percent;
+        public boolean isCharging;
 
-    public String serialize() {
-      StringBuilder result = new StringBuilder();
-      result.append(percent);
-      result.append('|');
-      result.append(isCharging);
-      return result.toString();
+        public BatteryStatus(double percent, boolean isCharging) {
+            this.percent = percent;
+            this.isCharging = isCharging;
+        }
+
+        protected BatteryStatus() {
+        }
+
+        public String serialize() {
+            StringBuilder result = new StringBuilder();
+            result.append(percent);
+            result.append('|');
+            result.append(isCharging);
+            return result.toString();
+        }
+
+        public static BatteryStatus deserialize(String serialized) {
+            String[] data = serialized.split("\\|");
+            BatteryStatus result = new BatteryStatus();
+            result.percent = Double.parseDouble(data[0]);
+            result.isCharging = Boolean.parseBoolean(data[1]);
+            return result;
+        }
     }
 
-    public static BatteryStatus deserialize(String serialized) {
-      String[] data = serialized.split("\\|");
-      BatteryStatus result = new BatteryStatus();
-      result.percent = Double.parseDouble(data[0]);
-      result.isCharging = Boolean.parseBoolean(data[1]);
-      return result;
-    }
-  }
+    //------------------------------------------------------------------------------------------------
+    // State
+    //------------------------------------------------------------------------------------------------
 
-  //------------------------------------------------------------------------------------------------
-  // State
-  //------------------------------------------------------------------------------------------------
+    public static final String TAG = "BatteryChecker";
 
-  public static final String TAG = "BatteryChecker";
+    private Context context;
+    private long repeatDelay;
+    private long initialDelay = 5000; // ms. 'not exactly clear why we wait to send
+    private BatteryWatcher watcher;
+    protected final Handler batteryHandler;
+    protected boolean closed;
+    protected final Monitor monitor = new Monitor();
 
-  private Context context;
-  private long repeatDelay;
-  private long initialDelay = 5000; // ms. 'not exactly clear why we wait to send
-  private BatteryWatcher watcher;
-  protected Handler batteryHandler;
-  protected final Monitor monitor = new Monitor();
+    //------------------------------------------------------------------------------------------------
+    // Construction & control
+    //------------------------------------------------------------------------------------------------
 
-  //------------------------------------------------------------------------------------------------
-  // Construction & control
-  //------------------------------------------------------------------------------------------------
-
-  public BatteryChecker(Context context, BatteryWatcher watcher, long delay) {
-    this.context = context;
-    this.watcher = watcher;
-    this.repeatDelay = delay;
-    batteryHandler = new Handler();
-  }
-
-  public void startBatteryMonitoring() {
-    // sends one battery update after a short delay.
-    batteryHandler.postDelayed(batteryLevelChecker, initialDelay);
-    registerReceiver(monitor);
-  }
-
-  public void endBatteryMonitoring() {
-    // If the following throws an exception, it is not a big deal, log it and continue
-    try {
-      context.unregisterReceiver(monitor);
-    } catch (Exception ex) {
-      RobotLog.ee(TAG, ex, "Failed to unregister battery monitor receiver");
+    public BatteryChecker(Context context, BatteryWatcher watcher, long delay) {
+        this.context = context;
+        this.watcher = watcher;
+        this.repeatDelay = delay;
+        batteryHandler = new Handler();
+        closed = true;
     }
 
-    try {
-      batteryHandler.removeCallbacks(batteryLevelChecker);
-    } catch (Exception ex) {
-      RobotLog.ee(TAG, ex, "Failed to remove battery monitor callbacks");
+    public void startBatteryMonitoring() {
+        // sends one battery update after a short delay.
+        synchronized (batteryHandler) {
+            closed = false;
+            batteryHandler.postDelayed(batteryLevelChecker, initialDelay);
+        }
+        registerReceiver(monitor);
     }
-  }
 
-  //------------------------------------------------------------------------------------------------
-  // Monitoring
-  //
-  // There are no guarantees about how frequently the hardware will broadcast the battery level
-  // so it's more reliable to do our own polling. I register the receiver with a null receiver
-  // since I don't care about actually receiving the broadcast. registerReceiver() gives me
-  // the intent with all the info I want. Then I do some processing, and I'm done.
-  //
-  // That said, we *also* do register so that we *can* get prompt notifications on transitions
-  // so that we can, especially, update the charging status more quickly than our polling permits.
-  //
-  //------------------------------------------------------------------------------------------------
+    public void close() {
 
-  protected class Monitor extends BroadcastReceiver {
-    @Override public void onReceive(Context context, Intent intent) {
-      switch (intent.getAction()) {
-        case Intent.ACTION_BATTERY_CHANGED:
-          processBatteryChanged(intent);
-          break;
-      }
+        if (!closed) {
+
+            // If the following throws an exception, it is not a big deal, log it and continue
+            try {
+                context.unregisterReceiver(monitor);
+            } catch (Exception ex) {
+                RobotLog.ee(TAG, ex, "Failed to unregister battery monitor receiver; ignored");
+            }
+
+            try {
+                synchronized (batteryHandler) {
+                    closed = true; // force any in-flight callback to simply drain
+                    batteryHandler.removeCallbacks(batteryLevelChecker);
+                }
+            } catch (Exception ex) {
+                RobotLog.ee(TAG, ex, "Failed to remove battery monitor callbacks; ignored");
+            }
+        }
     }
-  }
 
-  Runnable batteryLevelChecker = new Runnable() {
-    @Override
-    public void run() {
-      pollBatteryLevel(watcher);
+    //------------------------------------------------------------------------------------------------
+    // Monitoring
+    //
+    // There are no guarantees about how frequently the hardware will broadcast the battery level
+    // so it's more reliable to do our own polling. I register the receiver with a null receiver
+    // since I don't care about actually receiving the broadcast. registerReceiver() gives me
+    // the intent with all the info I want. Then I do some processing, and I'm done.
+    //
+    // That said, we *also* do register so that we *can* get prompt notifications on transitions
+    // so that we can, especially, update the charging status more quickly than our polling permits.
+    //
+    //------------------------------------------------------------------------------------------------
 
-      // Posts the next iteration of this runnable, to be run after "delay" milliseconds.
-      batteryHandler.postDelayed(batteryLevelChecker, repeatDelay);
+    protected class Monitor extends BroadcastReceiver {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            switch (intent.getAction()) {
+                case Intent.ACTION_BATTERY_CHANGED:
+                    processBatteryChanged(intent);
+                    break;
+            }
+        }
     }
-  };
 
-  public void pollBatteryLevel(BatteryWatcher watcher) {
-    Intent intent = registerReceiver(null);
-    processBatteryChanged(intent);
-  }
+    Runnable batteryLevelChecker = new Runnable() {
+        @Override
+        public void run() {
+            pollBatteryLevel(watcher);
 
-  protected Intent registerReceiver(BroadcastReceiver receiver) {
-    IntentFilter batteryLevelFilter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
-    return context.registerReceiver(receiver, batteryLevelFilter);
-  }
+            // Posts the next iteration of this runnable, to be run after "delay" milliseconds.
+            synchronized (batteryHandler) {
+                if (!closed) {
+                    batteryHandler.postDelayed(batteryLevelChecker, repeatDelay);
+                }
+            }
+        }
+    };
 
-  protected void processBatteryChanged(Intent intent) {
-
-    int currentLevel = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
-    int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
-
-    if (currentLevel >= 0 && scale > 0) {
-      int batteryPlugged = BatteryManager.BATTERY_PLUGGED_AC | BatteryManager.BATTERY_PLUGGED_USB | BatteryManager.BATTERY_PLUGGED_WIRELESS;
-      boolean isCharging = (intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 1) & batteryPlugged) != 0;
-      int percent = (currentLevel * 100) / scale;
-      RobotLog.ii(TAG, "percent remaining: " + percent + " is charging: " + isCharging);
-      watcher.updateBatteryStatus(new BatteryStatus(percent, isCharging));
+    public void pollBatteryLevel(BatteryWatcher watcher) {
+        Intent intent = registerReceiver(null);
+        processBatteryChanged(intent);
     }
-  }
+
+    protected Intent registerReceiver(BroadcastReceiver receiver) {
+        IntentFilter batteryLevelFilter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+        return context.registerReceiver(receiver, batteryLevelFilter);
+    }
+
+    protected void processBatteryChanged(Intent intent) {
+
+        int currentLevel = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+        int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+
+        if (currentLevel >= 0 && scale > 0) {
+            int batteryPlugged = BatteryManager.BATTERY_PLUGGED_AC | BatteryManager.BATTERY_PLUGGED_USB | BatteryManager.BATTERY_PLUGGED_WIRELESS;
+            boolean isCharging = (intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 1) & batteryPlugged) != 0;
+            int percent = (currentLevel * 100) / scale;
+            RobotLog.ii(TAG, "percent remaining: " + percent + " is charging: " + isCharging);
+            watcher.updateBatteryStatus(new BatteryStatus(percent, isCharging));
+        }
+    }
 
 }
